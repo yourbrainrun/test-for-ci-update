@@ -1,0 +1,100 @@
+test ci update other repo
+
+```yaml
+name: Build and Push Docker Image on Tag
+
+on:
+  push:
+    tags:
+      - 'v*'  # match all v prefix tag
+
+env:
+  REGISTRY_NAME: ${{ secrets.REGISTRY }}
+  IMAGE_NAME: backend-admin
+  REPOSITORY_NAME: mileage-dev
+  DOCKERFILE_PATH: "./Dockerfile"  # Dockerfile path demo: ./Dockerfile dir
+  BUILD_CONTEXT: "./"  # build context dir
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}  # checkout trigger tag
+
+      - name: Extract Docker Tag
+        id: extract-tag
+        run: |
+          # get tag name（cut refs/tags/ prefix）
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          echo "DOCKER_TAG=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "Extracted tag: ${GITHUB_OUTPUT} -- ${TAG_NAME}"
+
+      - name: Determine Branch
+        id: detect
+        run: |
+          # obtain tag commit
+          TAG_COMMIT=$(git rev-parse ${{ github.ref }}^{commit})
+          
+          # get develop branch commit
+          git fetch origin develop:develop
+          DEVELOP_COMMIT=$(git rev-parse develop)
+          
+          # check tag commit in develop
+          if git merge-base --is-ancestor $TAG_COMMIT $DEVELOP_COMMIT; then
+            echo "BRANCH_NAME=develop" >> $GITHUB_OUTPUT
+            echo "IMAGE_NAME=backend-admin" >> $GITHUB_OUTPUT
+            echo "run_tests=true" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::Tag ${{ github.ref }} is not in develop branch history"
+            echo "Tag commit: $TAG_COMMIT"
+            echo "Develop branch head: $DEVELOP_COMMIT"
+            echo "run_tests=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout INFRA repository
+        if: steps.detect.outputs.run_tests == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: BBX-Unified-Repo/shKENKOMILEAGE_INFRA
+          token: ${{ secrets.GITHUB_TOKEN }}  # 需要有访问INFRA仓库的权限
+          path: infra-repo
+
+      - name: Update values.yaml
+        if: steps.detect.outputs.run_tests == 'true'
+        run: |
+          # 进入INFRA仓库目录
+          cd infra-repo
+          
+          # 修改values.yaml文件中的tag值
+          sed -i "s/tag: \".*\"/tag: \"${{ steps.extract-tag.outputs.DOCKER_TAG }}\"/g" charts/backend-admin/values.yaml
+          
+          # 检查修改是否成功
+          git diff
+          
+          # 配置git用户信息
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
+
+      - name: Commit and push changes
+        if: steps.detect.outputs.run_tests == 'true'
+        run: |
+          cd infra-repo
+          
+          # 检查是否有更改
+          if git diff --quiet; then
+            echo "No changes to commit"
+          else
+            git add charts/backend-admin/values.yaml
+            git commit -m "Update backend-admin image tag to ${{ steps.extract-tag.outputs.DOCKER_TAG }}"
+            git push origin HEAD:main  # 假设目标分支是main，根据需要修改
+          fi
+
+```
+
